@@ -13,9 +13,9 @@ from draft_sim import make_pool, mc_pick, snake_order, team_value, vor_pick
 from grades import draft_grade, pick_grade, simulate_reference, to_letter
 from league_store import list_leagues, load_league, save_league
 from optimizer import best_lineup
-from projections import project, season_setup, train_model
+from projections import draft_pool, project, season_setup, train_model
 
-st.set_page_config(page_title="Fantasy Draft Optimizer", layout="wide")
+st.set_page_config(page_title="Optimal Pick", layout="wide")
 
 LEAGUE_NAME = "nfl"
 BASE_LEAGUE = LEAGUES[LEAGUE_NAME]
@@ -28,14 +28,14 @@ def load_engine(teams: int):
     ps = player_seasons(weekly)
     train_targets, draft_season = season_setup(ps)
     model, cols = train_model(ps, train_targets)
-    pool_df = project(ps, model, cols, draft_season).head(400)
+    pool_df = draft_pool(project(ps, model, cols, draft_season))
     pool = make_pool(pool_df, league)
     ref = simulate_reference(pool, n_drafts=150)
     return weekly, pool, ref, league, draft_season
 
 
 # ---------- sidebar ----------
-st.sidebar.title("Fantasy Draft Optimizer")
+st.sidebar.title("Optimal Pick")
 st.sidebar.selectbox("League", [LEAGUE_NAME.upper()])
 teams = int(st.sidebar.number_input("League size", 4, 14, BASE_LEAGUE["teams"]))
 slot = st.sidebar.number_input("Your slot", 1, teams, min(5, teams))
@@ -254,7 +254,8 @@ with tab_back:
         n = df.groupby("strategy").size().iloc[0]
         st.subheader("2025 backtest")
         st.write(f"{n} drafts per strategy, 12-team leagues, every roster "
-                 f"scored with what players actually did in 2025. Our bot "
+                 f"scored week by week with its best lineup from what players "
+                 f"actually did in 2025 (byes and injuries count). Our bot "
                  f"finished top 3 {mc['% top 3']:.0f}% of the time, average "
                  f"finish {mc['Avg finish']:.1f} of 12.")
         st.dataframe(summary)

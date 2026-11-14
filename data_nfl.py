@@ -1,14 +1,22 @@
-"""Load NFL weekly stats via nflreadpy and aggregate to player-season rows."""
+"""Load NFL weekly stats via nflreadpy and aggregate to player-season rows.
+
+Covers all official-app roster positions: QB/RB/WR/TE/K come from player
+stats (kicker fantasy points computed from FG distances since nflverse
+leaves them at 0), and team defenses (DST) are built from team stats plus
+schedule scores under standard D/ST scoring.
+"""
 
 import time
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 FIRST_SEASON = 2019
 
-POSITIONS = ["QB", "RB", "WR", "TE"]
+POSITIONS = ["QB", "RB", "WR", "TE", "K", "DST"]
+PLAYER_POSITIONS = ["QB", "RB", "WR", "TE", "K"]  # rows in player stats
 
 # usage/production stats summed over the season
 SUM_STATS = [
@@ -29,10 +37,70 @@ MEAN_STATS = ["target_share"]
 
 CACHE = Path(__file__).parent / "data_cache"
 
+# standard kicker scoring: FG by distance (0-39: 3, 40-49: 4, 50+: 5),
+# PAT made: 1, FG missed: -1
+_FG_MADE_3 = ["fg_made_0_19", "fg_made_20_29", "fg_made_30_39"]
+_FG_MADE_5 = ["fg_made_50_59", "fg_made_60_"]
+
+
+def _kicker_points(df: pd.DataFrame) -> pd.Series:
+    k = df.reindex(columns=_FG_MADE_3 + _FG_MADE_5
+                   + ["fg_made_40_49", "fg_missed", "pat_made"]).fillna(0.0)
+    return (3 * k[_FG_MADE_3].sum(axis=1) + 4 * k["fg_made_40_49"]
+            + 5 * k[_FG_MADE_5].sum(axis=1) + k["pat_made"] - k["fg_missed"])
+
+
+def _points_allowed_pts(pa: np.ndarray) -> np.ndarray:
+    """Standard D/ST points-allowed tiers."""
+    tiers = [(pa == 0, 10), (pa <= 6, 7), (pa <= 13, 4), (pa <= 20, 1),
+             (pa <= 27, 0), (pa <= 34, -1)]
+    return np.select([c for c, _ in tiers], [v for _, v in tiers], default=-4)
+
+
+def _dst_weekly(year: int) -> pd.DataFrame:
+    """One row per team-week with standard D/ST fantasy scoring: sacks 1,
+    INT 2, fumble recovery 2, defensive/special-teams TD 6, safety 2,
+    blocked kick 2, plus points-allowed tiers from final scores."""
+    import nflreadpy as nfl
+    ts = nfl.load_team_stats([year]).to_pandas()
+    ts = ts[ts["season_type"] == "REG"].copy()
+    sch = nfl.load_schedules([year]).to_pandas()
+    sch = sch[sch["game_type"] == "REG"]
+    pa = pd.concat([
+        sch.rename(columns={"home_team": "team", "away_score": "pa"})[
+            ["week", "team", "pa"]],
+        sch.rename(columns={"away_team": "team", "home_score": "pa"})[
+            ["week", "team", "pa"]],
+    ])
+    ts = ts.merge(pa, on=["team", "week"], how="left")
+    d = ts.reindex(columns=[
+        "def_sacks", "def_interceptions", "fumble_recovery_opp", "def_tds",
+        "special_teams_tds", "def_safeties", "def_punt_blocks",
+        "def_pat_blocks", "def_fg_blocks"]).fillna(0.0)
+    pts = (d["def_sacks"] + 2 * d["def_interceptions"]
+           + 2 * d["fumble_recovery_opp"]
+           + 6 * (d["def_tds"] + d["special_teams_tds"])
+           + 2 * d["def_safeties"]
+           + 2 * (d["def_punt_blocks"] + d["def_pat_blocks"]
+                  + d["def_fg_blocks"])
+           + _points_allowed_pts(ts["pa"].fillna(0.0).to_numpy(float)))
+    out = pd.DataFrame({
+        "player_id": "DST_" + ts["team"],
+        "player_display_name": ts["team"] + " D/ST",
+        "position": "DST",
+        "team": ts["team"],
+        "season": ts["season"].astype(int),
+        "week": ts["week"].astype(int),
+        "fantasy_points_ppr": pts.to_numpy(float),
+    })
+    for c in SUM_STATS[1:] + MEAN_STATS:
+        out[c] = 0.0
+    return out
+
 
 def load_weekly(seasons: list[int] | None = None) -> pd.DataFrame:
-    """Weekly regular-season stats for QB/RB/WR/TE, cached per season as
-    parquet. seasons=None loads everything from FIRST_SEASON through the
+    """Weekly regular-season stats for QB/RB/WR/TE/K/DST, cached per season
+    as parquet. seasons=None loads everything from FIRST_SEASON through the
     latest season nflreadpy has data for. Past seasons are cached forever;
     the current calendar year's season is re-downloaded daily."""
     CACHE.mkdir(exist_ok=True)
@@ -44,7 +112,7 @@ def load_weekly(seasons: list[int] | None = None) -> pd.DataFrame:
              "week"] + SUM_STATS + MEAN_STATS)
     frames = []
     for y in seasons:
-        f = CACHE / f"weekly_{y}_v2.parquet"
+        f = CACHE / f"weekly_{y}_v3.parquet"
         final = y < this_year  # past seasons never change
         if f.exists() and (final or time.time() - f.stat().st_mtime < 86400):
             frames.append(pd.read_parquet(f))
@@ -52,12 +120,16 @@ def load_weekly(seasons: list[int] | None = None) -> pd.DataFrame:
         import nflreadpy as nfl
         try:
             df = nfl.load_player_stats([y]).to_pandas()
+            df = df[(df["season_type"] == "REG")
+                    & (df["position"].isin(PLAYER_POSITIONS))].copy()
+            # nflverse leaves kicker fantasy points at 0: compute them
+            kick = df["position"] == "K"
+            df.loc[kick, "fantasy_points_ppr"] = _kicker_points(df[kick])
+            df = pd.concat([df[keep], _dst_weekly(y)[keep]], ignore_index=True)
         except Exception:
             if f.exists():  # offline/not-yet-published: fall back to cache
                 frames.append(pd.read_parquet(f))
             continue
-        df = df[(df["season_type"] == "REG") & (df["position"].isin(POSITIONS))]
-        df = df[keep].copy()
         if len(df):
             df.to_parquet(f)
             frames.append(df)

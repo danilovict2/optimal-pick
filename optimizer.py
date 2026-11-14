@@ -75,10 +75,11 @@ if __name__ == "__main__":
     rng = np.random.default_rng(0)
     mismatches = 0
     for t in range(200):
-        n = rng.integers(8, 16)
+        n = rng.integers(10, 18)
         df = pd.DataFrame({
             "name": [f"p{i}" for i in range(n)],
-            "position": rng.choice(POSITIONS, size=n, p=[0.15, 0.3, 0.4, 0.15]),
+            "position": rng.choice(POSITIONS, size=n,
+                                   p=[0.12, 0.25, 0.32, 0.13, 0.09, 0.09]),
             "proj": np.round(rng.uniform(10, 300, size=n), 2),
         })
         ilp_total, _ = best_lineup(df, league)

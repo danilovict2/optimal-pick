@@ -1,5 +1,7 @@
 """Backtest on the real 2025 season: train on <=2024, draft as if August 2025,
-score every team with actual 2025 season-total PPR points.
+then score every team week by week: for each of the 18 regular-season weeks,
+the roster's best legal lineup from that week's actual PPR points (so byes,
+mid-season injuries, and weekly variance all count), summed over the season.
 
 Runs N drafts per strategy (our seat: Monte Carlo / best-available / VOR bot;
 other 11 seats: VOR bots). MC uses R=16 rollouts here (vs 64 in the app) to
@@ -15,8 +17,9 @@ import pandas as pd
 
 from config import LEAGUES
 from data_nfl import load_weekly, player_seasons
-from draft_sim import make_pool, run_draft, team_value
-from projections import train_model, project
+from draft_sim import make_pool, run_draft
+from optimizer import greedy_lineup_value
+from projections import draft_pool, train_model, project
 
 N_DRAFTS = 1000
 MC_R = 16
@@ -31,10 +34,14 @@ def _init(pool, actual):
 
 
 def _actual_value(pool, actual, roster):
+    """Sum over weeks of the roster's best lineup from that week's actual
+    points. actual is a (players, weeks) matrix aligned to the pool."""
     r = np.asarray(roster, dtype=int)
-    from optimizer import roster_value
-    return roster_value(actual[r], pool["pos_codes"][r], pool["league"],
-                        pool["pos_order"])
+    codes = pool["pos_codes"][r]
+    return sum(
+        greedy_lineup_value(actual[r, w], codes, pool["league"],
+                            pool["pos_order"])
+        for w in range(actual.shape[1]))
 
 
 def _one_draft(args):
@@ -53,11 +60,15 @@ def build_pool_and_actuals():
     weekly = load_weekly(list(range(2019, 2026)))
     ps = player_seasons(weekly)
     model, cols = train_model(ps, [2022, 2023, 2024])  # no 2025 leakage
-    pool_df = project(ps, model, cols, 2025).head(POOL_TOP)
+    pool_df = draft_pool(project(ps, model, cols, 2025), POOL_TOP)
     pool = make_pool(pool_df, LEAGUES["nfl"])
 
-    actual_2025 = ps[ps["season"] == 2025].set_index("player_id")["fantasy_points_ppr"]
-    actual = pool["df"]["player_id"].map(actual_2025).fillna(0.0).to_numpy(float)
+    # (players, weeks) matrix of actual 2025 weekly points, pool-aligned;
+    # byes and missed games are simply 0 that week
+    wk = weekly[weekly["season"] == 2025]
+    mat = wk.pivot_table(index="player_id", columns="week",
+                         values="fantasy_points_ppr", aggfunc="sum")
+    actual = mat.reindex(pool["df"]["player_id"]).fillna(0.0).to_numpy(float)
     return pool, actual
 
 
@@ -88,8 +99,8 @@ def main():
     print("\nMean finishing rank by draft slot:\n", by_slot.to_string())
 
     mc, base = summary.loc["mc"], summary.loc["best_available"]
-    print(f"\nHEADLINE: In {N_DRAFTS} simulated 2025 drafts scored with real "
-          f"2025 results, our Monte Carlo draft bot finished top-3 in "
+    print(f"\nHEADLINE: In {N_DRAFTS} simulated 2025 drafts scored week-by-week "
+          f"with real 2025 results, our Monte Carlo draft bot finished top-3 in "
           f"{mc['pct_top3']:.0f}% of 12-team leagues (vs {base['pct_top3']:.0f}% "
           f"for drafting best-projected-available), with a mean finish of "
           f"{mc['mean_rank']:.1f} out of 12.")

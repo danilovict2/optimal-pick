@@ -89,6 +89,16 @@ def project(ps: pd.DataFrame, model, cols, target_season: int) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def draft_pool(pool: pd.DataFrame, n: int = 400,
+               min_per_pos: int = 20) -> pd.DataFrame:
+    """Top-n projected players, but guarantee every position keeps at least
+    min_per_pos entries so low-scoring slots (K, DST) stay draftable."""
+    keep = pool.index < n
+    for pos in pool["position"].unique():
+        keep |= pool.index.isin(pool.index[pool["position"] == pos][:min_per_pos])
+    return pool[keep].reset_index(drop=True)
+
+
 if __name__ == "__main__":
     weekly = load_weekly(list(range(2019, 2026)))
     ps = player_seasons(weekly)
@@ -100,7 +110,8 @@ if __name__ == "__main__":
     print("Validation MAE on held-out 2024 (season-total PPR points):")
     for pos in POSITIONS:
         sub = val[val["position"] == pos]
-        print(f"  {pos}: {mean_absolute_error(sub['y'], sub['pred']):6.1f}  (n={len(sub)})")
+        if len(sub):
+            print(f"  {pos}: {mean_absolute_error(sub['y'], sub['pred']):6.1f}  (n={len(sub)})")
 
     # backtest model: train on 2022-2024 targets, project 2025
     model, cols = train_model(ps, [2022, 2023, 2024])

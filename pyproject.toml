@@ -1,7 +1,7 @@
 [project]
-name = "fantasy-optimizer"
+name = "optimal-pick"
 version = "0.1.0"
-description = "Add your description here"
+description = "ML + optimization pipeline for NFL fantasy drafts: projections, ILP lineups, Monte Carlo draft bot, and pick grades"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

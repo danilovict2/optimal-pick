@@ -3,7 +3,7 @@
 
 LEAGUES = {
     "nfl": {
-        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1},
+        "slots": {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DST": 1},
         "flex": {"FLEX": (["RB", "WR", "TE"], 1)},
         "teams": 12,
         "rounds": 15,

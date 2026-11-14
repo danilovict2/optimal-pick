@@ -10,8 +10,9 @@ import pandas as pd
 
 from optimizer import roster_value
 
-MAX_PER_POS = {"QB": 3, "TE": 3}       # roster caps for bots
+MAX_PER_POS = {"QB": 3, "TE": 3, "K": 1, "DST": 1}  # roster caps for bots
 ONE_UNTIL_ROUND = {"QB": 8, "TE": 8}   # no 2nd QB/TE before this round (1-based)
+NOT_BEFORE_ROUND = {"K": 13, "DST": 12}  # bots wait on K/DST like humans do
 
 
 def make_pool(pool_df: pd.DataFrame, league: dict) -> dict:
@@ -53,14 +54,34 @@ def snake_order(teams: int, rounds: int):
 
 
 def _eligible(pool, avail, pos_counts_team, round_no):
-    """Mask of players this team may draft (roster caps)."""
+    """Mask of players this team may draft (roster caps + must-fill)."""
+    pos_order, league = pool["pos_order"], pool["league"]
+
+    # must-fill: once remaining picks are only just enough to fill every
+    # empty fixed starting slot (e.g. no K/DST yet), draft only those
+    picks_left = league["rounds"] - round_no
+    need = {p: n - pos_counts_team[pos_order.index(p)]
+            for p, n in league["slots"].items()
+            if pos_counts_team[pos_order.index(p)] < n}
+    if need and sum(need.values()) >= picks_left:
+        codes = [pos_order.index(p) for p in need]
+        mask = avail & np.isin(pool["pos_codes"], codes)
+        if mask.any():
+            return mask
+
     mask = avail.copy()
     for p, cap in MAX_PER_POS.items():
-        ci = pool["pos_order"].index(p)
+        if p not in pos_order:
+            continue
+        ci = pos_order.index(p)
         if pos_counts_team[ci] >= cap or (
-            pos_counts_team[ci] >= 1 and round_no + 1 < ONE_UNTIL_ROUND[p]
+            pos_counts_team[ci] >= 1
+            and round_no + 1 < ONE_UNTIL_ROUND.get(p, 0)
         ):
             mask &= pool["pos_codes"] != ci
+    for p, rnd in NOT_BEFORE_ROUND.items():
+        if p in pos_order and round_no + 1 < rnd:
+            mask &= pool["pos_codes"] != pos_order.index(p)
     return mask if mask.any() else avail
 
 
@@ -160,7 +181,8 @@ if __name__ == "__main__":
     weekly = load_weekly(list(range(2019, 2026)))
     ps = player_seasons(weekly)
     model, cols = train_model(ps, [2022, 2023, 2024])
-    pool = make_pool(project(ps, model, cols, 2025), LEAGUES["nfl"])
+    from projections import draft_pool
+    pool = make_pool(draft_pool(project(ps, model, cols, 2025)), LEAGUES["nfl"])
 
     rosters, picks = run_draft(pool, seed=42)
     print("Rounds 1-3 board (12 VOR bots):")
@@ -174,7 +196,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(0)
     order = snake_order(12, 15)
     avail = np.ones(len(pool["proj"]), dtype=bool)
-    pos_counts = np.zeros((12, 4), dtype=int)
+    pos_counts = np.zeros((12, len(pool["pos_order"])), dtype=int)
     for n in range(4):
         r, t = order[n]
         i = vor_pick(pool, rng, avail, pos_counts[t], r)
