@@ -3,3 +3,5 @@ __pycache__/
 data_cache/
 leagues/
 backtest_log.txt
+backtest_log_nba.txt
+backtest_log_fpl.txt
