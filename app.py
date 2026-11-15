@@ -1,4 +1,5 @@
-"""Streamlit app: live mock draft vs bots, backtest results, weekly start/sit."""
+"""Streamlit app: live mock draft vs bots, backtest results, weekly
+start/sit -- for NFL, NBA, and Premier League (FPL Draft) leagues."""
 
 from pathlib import Path
 
@@ -8,45 +9,101 @@ import pandas as pd
 import streamlit as st
 
 from config import LEAGUES
-from data_nfl import bye_teams, load_injuries, load_weekly, player_seasons
-from draft_sim import make_pool, mc_pick, snake_order, team_value, vor_pick
-from grades import draft_grade, pick_grade, simulate_reference, to_letter
+from draft_sim import make_pool, mc_pick, snake_order, vor_pick
+from grades import draft_grade, pick_grade, simulate_reference
 from league_store import list_leagues, load_league, save_league
 from optimizer import best_lineup
-from projections import draft_pool, project, season_setup, train_model
+from projections import league_engine, league_module
 
-st.set_page_config(page_title="Optimal Pick", layout="wide")
+st.set_page_config(page_title="Optimal Pick", page_icon="🏆", layout="wide")
 
-LEAGUE_NAME = "nfl"
-BASE_LEAGUE = LEAGUES[LEAGUE_NAME]
+ACCENT = "#E23B3B"    # validated vs #0F0F10 (dataviz checks)
+MUTED_BAR = "#80808A"  # de-emphasis neutral for baseline bars
+INK_2 = "#9A9AA2"
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&display=swap');
+
+h1, h2, h3, [data-testid="stMetricValue"] {
+    font-family: "Oswald", "Arial Narrow", sans-serif !important;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600 !important;
+}
+[data-testid="stDataFrame"] *, [data-testid="stMetricValue"] {
+    font-variant-numeric: tabular-nums;
+}
+#MainMenu, [data-testid="stAppDeployButton"], footer { visibility: hidden; }
+
+.op-brand {
+    font-family: "Oswald", "Arial Narrow", sans-serif;
+    font-size: 1.85rem; font-weight: 600;
+    letter-spacing: 0.06em; line-height: 1.1;
+    text-transform: uppercase; color: #EAEAEA;
+}
+.op-brand span { color: #E23B3B; }
+.op-rule {
+    height: 2px; width: 44px; background: #E23B3B;
+    margin: 10px 0 4px 0;
+}
+.op-hint {
+    background: #19191C; border: 1px solid #2A2A2E;
+    border-radius: 4px; padding: 12px 16px; color: #C9C9CE;
+}
+[data-testid="stMainBlockContainer"] { padding-top: 2.4rem; }
+.op-rec {
+    background: #19191C; border: 1px solid #2A2A2E;
+    border-left: 3px solid #E23B3B; border-radius: 4px;
+    padding: 12px 18px 14px; margin-bottom: 14px;
+}
+.op-rec .k {
+    font-size: 0.72rem; letter-spacing: 0.14em;
+    text-transform: uppercase; color: #9A9AA2; margin-bottom: 2px;
+}
+.op-rec .v {
+    font-family: "Oswald", "Arial Narrow", sans-serif;
+    font-size: 1.45rem; font-weight: 600; letter-spacing: 0.03em;
+    text-transform: uppercase; color: #EAEAEA;
+}
+.op-rec .v .pos { color: #9A9AA2; font-size: 0.95rem; margin-left: 8px; }
+</style>
+""", unsafe_allow_html=True)
+
+def hint(text: str):
+    """Neutral hint card (st.info is blue, which clashes with the theme)."""
+    st.markdown(f'<div class="op-hint">{text}</div>', unsafe_allow_html=True)
 
 
 @st.cache_resource(ttl="24h", show_spinner="Loading data and training model...")
-def load_engine(teams: int):
-    league = {**BASE_LEAGUE, "teams": teams}
-    weekly = load_weekly()
-    ps = player_seasons(weekly)
-    train_targets, draft_season = season_setup(ps)
-    model, cols = train_model(ps, train_targets)
-    pool_df = draft_pool(project(ps, model, cols, draft_season))
+def load_engine(league_key: str, teams: int):
+    league = {**LEAGUES[league_key], "teams": teams}
+    _, pool_df, draft_season = league_engine(league_key)
     pool = make_pool(pool_df, league)
     ref = simulate_reference(pool, n_drafts=150)
-    return weekly, pool, ref, league, draft_season
+    return pool, ref, league, draft_season
 
 
 # ---------- sidebar ----------
-st.sidebar.title("Optimal Pick")
-st.sidebar.selectbox("League", [LEAGUE_NAME.upper()])
-teams = int(st.sidebar.number_input("League size", 4, 14, BASE_LEAGUE["teams"]))
-slot = st.sidebar.number_input("Your slot", 1, teams, min(5, teams))
+st.sidebar.markdown('<div class="op-brand">Optimal <span>Pick</span></div>'
+                    '<div class="op-rule"></div>', unsafe_allow_html=True)
+league_key = st.sidebar.selectbox(
+    "League", list(LEAGUES), format_func=lambda k: LEAGUES[k]["label"])
+CFG = LEAGUES[league_key]
+MOD = league_module(league_key)
+teams = int(st.sidebar.number_input("League size", 4, 20, CFG["teams"],
+                                    key=f"teams_{league_key}"))
+slot = st.sidebar.number_input("Your slot", 1, teams, min(5, teams),
+                               key=f"slot_{league_key}")
 mode = st.sidebar.radio("Mode", ["Mock draft", "Live draft helper"])
 R = st.sidebar.slider("Rollouts per pick", 8, 128, 64, step=8)
 seed = st.sidebar.number_input("Seed", 0, 99999, 42)
 
-weekly, pool, ref, LEAGUE, DRAFT_SEASON = load_engine(teams)
-st.sidebar.caption(f"{DRAFT_SEASON} projections, trained through "
-                   f"{DRAFT_SEASON - 1}. Live mode: you enter every real "
-                   f"pick, the sim tells you who to take.")
+pool, ref, LEAGUE, DRAFT_SEASON = load_engine(league_key, teams)
+st.sidebar.caption(f"{MOD.season_label(DRAFT_SEASON)} projections, trained "
+                   f"through {MOD.season_label(DRAFT_SEASON - 1)}. Live "
+                   f"mode: you enter every real pick, the sim tells you who "
+                   f"to take.")
 TOTAL_PICKS = LEAGUE["teams"] * LEAGUE["rounds"]
 ORDER = snake_order(LEAGUE["teams"], LEAGUE["rounds"])
 POS = pool["pos_order"]
@@ -55,6 +112,7 @@ POS = pool["pos_order"]
 def new_draft(slot: int, seed: int, live: bool, name: str):
     st.session_state.draft = {
         "slot": slot - 1,
+        "league": league_key,
         "teams": LEAGUE["teams"],
         "name": name,
         "saved": False,
@@ -140,11 +198,11 @@ tab_draft, tab_team, tab_back = st.tabs(["Draft", "My Team", "Backtest"])
 # ---------- Draft ----------
 with tab_draft:
     if "draft" not in st.session_state:
-        st.info("Pick a slot in the sidebar and start a draft.")
-    elif st.session_state.draft["teams"] != LEAGUE["teams"]:
-        d = st.session_state.draft
-        st.warning(f"League size changed mid-draft. Set it back to "
-                   f"{d['teams']} or start a new draft.")
+        hint("Pick a slot in the sidebar and start a draft.")
+    elif (st.session_state.draft.get("league") != league_key
+          or st.session_state.draft["teams"] != LEAGUE["teams"]):
+        st.warning("League or league size changed mid-draft. Switch back "
+                   "or start a new draft.")
     else:
         d = st.session_state.draft
         if not d["live"]:
@@ -163,7 +221,8 @@ with tab_draft:
                 if not d["saved"]:
                     d["name"] = save_league(
                         d["name"], LEAGUE, DRAFT_SEASON, d["slot"],
-                        [roster_records(ro) for ro in d["rosters"]], d["live"])
+                        [roster_records(ro) for ro in d["rosters"]], d["live"],
+                        league_key)
                     d["saved"] = True
                 st.caption(f"Saved as \"{d['name']}\". Weekly lineups are in "
                            f"My Team.")
@@ -198,7 +257,11 @@ with tab_draft:
                     d["rec"] = cands
                 cands = d["rec"]
                 best = cands[0]
-                st.success(f"Take **{best['name']}** ({best['position']})")
+                st.markdown(
+                    f'<div class="op-rec"><div class="k">Recommended pick'
+                    f'</div><div class="v">{best["name"]}'
+                    f'<span class="pos">{best["position"]}</span></div></div>',
+                    unsafe_allow_html=True)
                 why = pd.DataFrame(cands)[["name", "position", "proj", "mean_value"]]
                 why.columns = ["Player", "Pos", "Proj", "EV"]
                 st.dataframe(why.round(1), hide_index=True)
@@ -235,9 +298,11 @@ with tab_draft:
 
 # ---------- Backtest ----------
 with tab_back:
-    csv = Path("backtest_results.csv")
+    csv = Path(f"backtest_results_{league_key}.csv")
+    bt_label = MOD.season_label(CFG["backtest_season"])
     if not csv.exists():
-        st.warning("Run `python backtest.py` first to generate backtest_results.csv.")
+        hint(f"Run `python backtest.py {league_key}` first to generate the "
+             f"{CFG['label']} backtest.")
     else:
         df = pd.read_csv(csv)
         names = {"mc": "Monte Carlo (ours)", "best_available": "Best available",
@@ -252,71 +317,44 @@ with tab_back:
 
         mc = summary.loc[names["mc"]]
         n = df.groupby("strategy").size().iloc[0]
-        st.subheader("2025 backtest")
-        st.write(f"{n} drafts per strategy, 12-team leagues, every roster "
-                 f"scored week by week with its best lineup from what players "
-                 f"actually did in 2025 (byes and injuries count). Our bot "
-                 f"finished top 3 {mc['% top 3']:.0f}% of the time, average "
-                 f"finish {mc['Avg finish']:.1f} of 12.")
+        bt_teams = int(df["slot"].max())
+        st.subheader(f"{bt_label} backtest")
+        st.write(f"{n} drafts per strategy, {bt_teams}-team leagues, every "
+                 f"roster scored week by week with its best lineup from what "
+                 f"players actually did in {bt_label} (absences count). Our "
+                 f"bot finished top 3 {mc['% top 3']:.0f}% of the time, "
+                 f"average finish {mc['Avg finish']:.1f} of {bt_teams}.")
         st.dataframe(summary)
 
         chart_df = summary.reset_index()[["strategy", "Avg finish"]]
-        chart = (
-            alt.Chart(chart_df)
-            .mark_bar(color="#4269d0", cornerRadiusEnd=4, height=28)
-            .encode(
-                x=alt.X("Avg finish:Q", scale=alt.Scale(domain=[0, 12]),
-                        title="Avg finish (lower is better)"),
-                y=alt.Y("strategy:N", sort="x", title=None),
-                tooltip=["strategy", "Avg finish"],
-            )
+        chart_df["ours"] = chart_df["strategy"] == names["mc"]
+        base = alt.Chart(chart_df).encode(
+            x=alt.X("Avg finish:Q", scale=alt.Scale(domain=[0, bt_teams]),
+                    axis=alt.Axis(values=list(range(0, bt_teams + 1, 2)),
+                                  grid=False),
+                    title="Avg finish (lower is better)"),
+            y=alt.Y("strategy:N", sort="x", title=None),
+            tooltip=["strategy", "Avg finish"],
         )
-        labels = chart.mark_text(align="left", dx=4).encode(
+        bars = base.mark_bar(cornerRadiusEnd=4, height=26).encode(
+            color=alt.condition(alt.datum.ours, alt.value(ACCENT),
+                                alt.value(MUTED_BAR)))
+        labels = base.mark_text(align="left", dx=6, color="#EAEAEA").encode(
             text=alt.Text("Avg finish:Q", format=".1f"))
-        st.altair_chart(chart + labels, width="stretch")
+        st.altair_chart(
+            (bars + labels)
+            .configure_view(strokeWidth=0)
+            .configure_axis(domain=False, tickColor="transparent",
+                            gridColor="#232327", labelColor=INK_2,
+                            titleColor=INK_2),
+            width="stretch")
 
 # ---------- My Team ----------
 with tab_team:
-    latest_season = int(weekly["season"].max())
-    recent = weekly[weekly["season"] == latest_season].sort_values("week")
-    last_done = int(recent["week"].max())
-    this_week = last_done + 1
-
-    form = (recent.groupby("player_id")
-            .agg(name=("player_display_name", "last"),
-                 position=("position", "last"),
-                 team=("team", "last"),
-                 form=("fantasy_points_ppr", lambda s: s.tail(4).mean()),
-                 last_gw=("week", "max"))
-            .reset_index())
-
-    inj = load_injuries(latest_season)
-    inj_week = None
-    if len(inj):
-        inj_week = min(this_week, int(inj["week"].max()))
-        inj = (inj[inj["week"] == inj_week]
-               .drop_duplicates("gsis_id").set_index("gsis_id")["report_status"])
-    else:
-        inj = pd.Series(dtype=object)
-    byes = bye_teams(latest_season, this_week)
-
-    def _status(r):
-        """(status label, usable weekly projection) for one player."""
-        if r["team"] in byes:
-            return "BYE", 0.0
-        s = inj.get(r["player_id"])
-        if s in ("Out", "Doubtful"):
-            return s, 0.0
-        if s == "Questionable":
-            return "Q", r["form"]
-        if r["last_gw"] < last_done - 2:  # missed the last 3+ weeks, no status
-            return f"no game since wk {int(r['last_gw'])}", 0.0
-        return "", r["form"]
-
-    form[["status", "proj"]] = form.apply(_status, axis=1, result_type="expand")
+    form, period, form_note = MOD.current_form()
 
     def weekly_roster(team: list[dict]) -> pd.DataFrame:
-        """Attach weekly form + injury/bye status to a saved roster."""
+        """Attach current form + availability status to a saved roster."""
         rdf = pd.DataFrame(team)[["player_id", "name", "position"]]
         rdf = rdf.merge(form[["player_id", "proj", "status"]],
                         on="player_id", how="left")
@@ -324,31 +362,28 @@ with tab_team:
         rdf["proj"] = rdf["proj"].fillna(0.0)
         return rdf
 
-    saved = list_leagues()
+    saved = list_leagues(league_key)
     if not saved:
-        st.info("No leagues yet. Draft one first.")
+        hint("No leagues yet. Draft one first.")
     else:
         pick_league = st.selectbox("League", saved)
         lg = load_league(pick_league)
-        lg_cfg = {**BASE_LEAGUE, "teams": lg["teams"], "rounds": lg["rounds"]}
+        lg_cfg = {**LEAGUES[lg.get("league", "nfl")],
+                  "teams": lg["teams"], "rounds": lg["rounds"]}
         mine = lg["rosters"][lg["my_slot"]]
-        inj_note = (f"injury report wk {inj_week}" if inj_week is not None
-                    else "no injury report available")
-        bye_note = (", ".join(sorted(byes)) if byes else "none")
-        st.caption(f"Drafted for {lg['draft_season']} on {lg['created']}, "
-                   f"slot {lg['my_slot'] + 1} of {lg['teams']}. Form = last 4 "
-                   f"games through week {last_done}; {inj_note}; week "
-                   f"{this_week} byes: {bye_note}. Reruns on every data "
+        st.caption(f"Drafted for {MOD.season_label(lg['draft_season'])} on "
+                   f"{lg['created']}, slot {lg['my_slot'] + 1} of "
+                   f"{lg['teams']}. {form_note} Reruns on every data "
                    f"refresh.")
 
         left, right = st.columns([3, 2])
         with left:
             rdf = weekly_roster(mine)
             total, lineup = best_lineup(rdf, lg_cfg)
-            st.markdown(f"**Week {this_week} lineup ({total:.1f} pts)**")
+            st.markdown(f"**{period} lineup ({total:.1f} pts)**")
             forced = lineup[lineup["proj"] <= 0]
             if len(forced):
-                st.warning("Nobody healthy for: " + "; ".join(
+                st.warning("Nobody available for: " + "; ".join(
                     f"{r['slot']} ({r['name']}: {r['status'] or 'no points'})"
                     for _, r in forced.iterrows()) + ". Waiver pickup needed.")
             st.dataframe(
@@ -362,7 +397,7 @@ with tab_team:
                     .sort_values("proj", ascending=False), hide_index=True)
 
         with right:
-            st.markdown(f"**Week {this_week} projected scores**")
+            st.markdown(f"**{period} projected scores**")
             rows = []
             for t, team in enumerate(lg["rosters"]):
                 val, _ = best_lineup(weekly_roster(team), lg_cfg)
