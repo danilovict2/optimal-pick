@@ -1,0 +1,7 @@
+.git
+.venv
+__pycache__
+data_cache
+leagues
+backtest_log*.txt
+.python-version

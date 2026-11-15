@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:8501"
+    volumes:
+      # data_cache lives on the host: upload it from your machine, since
+      # stats.nba.com blocks most datacenter IPs (the app falls back to
+      # cache when a refresh fails). leagues/ holds saved drafts.
+      - ./data_cache:/app/data_cache
+      - ./leagues:/app/leagues
