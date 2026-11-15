@@ -153,12 +153,14 @@ def advance_bots(d: dict):
         apply_pick(d, vor_pick(pool, d["rng"], d["avail"], d["pos_counts"][t], r))
 
 
-def player_select(d: dict, label: str, key: str):
-    """Searchable dropdown over available players, best VOR first."""
+def player_select(d: dict, label: str, key: str, preselect: int | None = None):
+    """Searchable dropdown over available players, best VOR first;
+    preselect puts that player (e.g. the recommendation) in the box."""
     avail_idx = np.flatnonzero(d["avail"])
-    avail_idx = avail_idx[np.argsort(pool["vor"][avail_idx])[::-1]]
+    options = [int(i) for i in avail_idx[np.argsort(pool["vor"][avail_idx])[::-1]]]
+    index = options.index(preselect) if preselect in options else 0
     return st.selectbox(
-        label, avail_idx, key=key,
+        label, options, index=index, key=key,
         format_func=lambda i: f"{pool['names'][i]} "
         f"({POS[pool['pos_codes'][i]]}, {pool['proj'][i]:.0f})")
 
@@ -267,7 +269,8 @@ with tab_draft:
                 st.dataframe(why.round(1), hide_index=True)
                 st.caption(f"EV = avg final roster value, {R} sims each.")
 
-                choice = player_select(d, "Player", "my_pick")
+                choice = player_select(d, "Player", f"my_pick_{d['pick_no']}",
+                                       preselect=int(best["idx"]))
                 if st.button("Draft", type="primary"):
                     apply_pick(d, int(choice))
                     st.rerun()
@@ -283,7 +286,8 @@ with tab_draft:
                 r_now, t_now = ORDER[d["pick_no"]]
                 st.subheader(f"Pick {d['pick_no'] + 1} (round {r_now + 1}): "
                              f"Team {t_now + 1}")
-                choice = player_select(d, "They took", "opp_pick")
+                choice = player_select(d, "They took",
+                                       f"opp_pick_{d['pick_no']}")
                 col1, col2 = st.columns(2)
                 if col1.button("Record", type="primary"):
                     apply_pick(d, int(choice))
