@@ -122,14 +122,44 @@ def _rollout(pool, rng, avail, pos_counts, our_roster, our_team, order, start,
     return team_value(pool, our_roster, bench_weight)
 
 
+def _candidates(pool, idx, our_roster, K, bench_weight):
+    """Top-K candidates, half by VOR (scarcity) and half by marginal value
+    added to OUR current roster (so a 3rd RB ranks below a needed starter),
+    interleaved and deduped."""
+    by_vor = idx[np.argsort(pool["vor"][idx])[::-1]]
+    r = np.asarray(our_roster, dtype=int)
+    rp, rc = pool["proj"][r], pool["pos_codes"][r]
+    league, pos_order = pool["league"], pool["pos_order"]
+    base = (roster_value(rp, rc, league, pos_order, bench_weight)
+            if len(r) else 0.0)
+    # shortlist for the marginal scores: deep VOR cut + each position's best
+    short = set(by_vor[:4 * K].tolist())
+    for ci in range(len(pos_order)):
+        pos_idx = idx[pool["pos_codes"][idx] == ci]
+        if len(pos_idx):
+            short.add(int(pos_idx[np.argmax(pool["proj"][pos_idx])]))
+    short = np.fromiter(short, dtype=int)
+    marg = np.array([
+        roster_value(np.append(rp, pool["proj"][i]),
+                     np.append(rc, pool["pos_codes"][i]),
+                     league, pos_order, bench_weight) - base
+        for i in short])
+    by_marg = short[np.argsort(marg)[::-1]]
+    merged = []
+    for pair in zip(by_vor[:K], by_marg[:K]):
+        merged += [int(pair[0]), int(pair[1])]
+    return list(dict.fromkeys(merged))[:K]
+
+
 def mc_pick(pool, rng, avail, pos_counts, our_roster, our_team, order, pick_no,
             K=8, R=64, bench_weight=0.1):
-    """Monte Carlo bot: evaluate top-K VOR candidates by mean roster value
-    over R rollouts. Returns (pick, candidates list for the 'why' table)."""
+    """Monte Carlo bot: evaluate top-K candidates (VOR + roster-need mix)
+    by mean roster value over R rollouts. Returns (pick, candidates list
+    for the 'why' table)."""
     r_now = order[pick_no][0]
     mask = _eligible(pool, avail, pos_counts[our_team], r_now)
     idx = np.flatnonzero(mask)
-    cands = idx[np.argsort(pool["vor"][idx])[::-1][:K]]
+    cands = _candidates(pool, idx, our_roster, K, bench_weight)
 
     results = []
     for c in cands:
