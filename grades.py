@@ -64,14 +64,12 @@ def draft_grade(pool, our_roster: list[int], slot: int, ref: dict):
 
 if __name__ == "__main__":
     from config import LEAGUES
-    from data_nfl import load_weekly, player_seasons
     from draft_sim import make_pool
-    from projections import draft_pool, train_model, project
+    from projections import league_engine
 
-    weekly = load_weekly(list(range(2019, 2026)))
-    ps = player_seasons(weekly)
-    model, cols = train_model(ps, [2022, 2023, 2024])
-    pool = make_pool(draft_pool(project(ps, model, cols, 2025)), LEAGUES["nfl"])
+    cfg = LEAGUES["nfl"]
+    _, pool_df, _ = league_engine("nfl", backtest_season=cfg["backtest_season"])
+    pool = make_pool(pool_df, cfg)
 
     ref = simulate_reference(pool, n_drafts=100)
     rosters, picks = run_draft(pool, seed=3, our_team=5, our_strategy="vor")

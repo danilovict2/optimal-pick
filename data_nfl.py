@@ -20,7 +20,7 @@ PLAYER_POSITIONS = ["QB", "RB", "WR", "TE", "K"]  # rows in player stats
 
 # usage/production stats summed over the season
 SUM_STATS = [
-    "fantasy_points_ppr",
+    "fantasy_points",
     "targets",
     "receptions",
     "carries",
@@ -34,6 +34,8 @@ SUM_STATS = [
 ]
 # per-game-ish rates averaged over the season
 MEAN_STATS = ["target_share"]
+
+LAG_STATS = SUM_STATS + MEAN_STATS + ["games", "ppg"]
 
 CACHE = Path(__file__).parent / "data_cache"
 
@@ -91,7 +93,7 @@ def _dst_weekly(year: int) -> pd.DataFrame:
         "team": ts["team"],
         "season": ts["season"].astype(int),
         "week": ts["week"].astype(int),
-        "fantasy_points_ppr": pts.to_numpy(float),
+        "fantasy_points": pts.to_numpy(float),
     })
     for c in SUM_STATS[1:] + MEAN_STATS:
         out[c] = 0.0
@@ -115,16 +117,18 @@ def load_weekly(seasons: list[int] | None = None) -> pd.DataFrame:
         f = CACHE / f"weekly_{y}_v3.parquet"
         final = y < this_year  # past seasons never change
         if f.exists() and (final or time.time() - f.stat().st_mtime < 86400):
-            frames.append(pd.read_parquet(f))
+            frames.append(pd.read_parquet(f).rename(
+                columns={"fantasy_points_ppr": "fantasy_points"}))
             continue
         import nflreadpy as nfl
         try:
             df = nfl.load_player_stats([y]).to_pandas()
             df = df[(df["season_type"] == "REG")
                     & (df["position"].isin(PLAYER_POSITIONS))].copy()
+            df = df.rename(columns={"fantasy_points_ppr": "fantasy_points"})
             # nflverse leaves kicker fantasy points at 0: compute them
             kick = df["position"] == "K"
-            df.loc[kick, "fantasy_points_ppr"] = _kicker_points(df[kick])
+            df.loc[kick, "fantasy_points"] = _kicker_points(df[kick])
             df = pd.concat([df[keep], _dst_weekly(y)[keep]], ignore_index=True)
         except Exception:
             if f.exists():  # offline/not-yet-published: fall back to cache
@@ -194,8 +198,72 @@ def player_seasons(weekly: pd.DataFrame) -> pd.DataFrame:
         ["player_display_name", "position"]
     ].reset_index()
     out = agg.merge(meta, on=["player_id", "season"])
-    out["ppg"] = out["fantasy_points_ppr"] / out["games"]
+    out["ppg"] = out["fantasy_points"] / out["games"]
     return out
+
+
+# ---------- league data contract ----------
+
+def season_label(season: int) -> str:
+    return str(season)
+
+
+def load_player_seasons() -> pd.DataFrame:
+    return player_seasons(load_weekly())
+
+
+def load_weekly_points(season: int) -> pd.DataFrame:
+    """player_id, week, fantasy_points for one season (backtest scoring)."""
+    w = load_weekly([season])
+    return w[["player_id", "week", "fantasy_points"]]
+
+
+def current_form():
+    """Start/sit inputs: (form_df, period_label, note). form_df columns:
+    player_id, name, position, form, proj, status."""
+    weekly = load_weekly()
+    latest = int(weekly["season"].max())
+    recent = weekly[weekly["season"] == latest].sort_values("week")
+    last_done = int(recent["week"].max())
+    this_week = last_done + 1
+
+    form = (recent.groupby("player_id")
+            .agg(name=("player_display_name", "last"),
+                 position=("position", "last"),
+                 team=("team", "last"),
+                 form=("fantasy_points", lambda s: s.tail(4).mean()),
+                 last_gw=("week", "max"))
+            .reset_index())
+
+    inj = load_injuries(latest)
+    inj_week = None
+    if len(inj):
+        inj_week = min(this_week, int(inj["week"].max()))
+        inj = (inj[inj["week"] == inj_week]
+               .drop_duplicates("gsis_id").set_index("gsis_id")["report_status"])
+    else:
+        inj = pd.Series(dtype=object)
+    byes = bye_teams(latest, this_week)
+
+    def _status(r):
+        if r["team"] in byes:
+            return "BYE", 0.0
+        s = inj.get(r["player_id"])
+        if s in ("Out", "Doubtful"):
+            return s, 0.0
+        if s == "Questionable":
+            return "Q", r["form"]
+        if r["last_gw"] < last_done - 2:  # missed the last 3+ weeks, no status
+            return f"no game since wk {int(r['last_gw'])}", 0.0
+        return "", r["form"]
+
+    form[["status", "proj"]] = form.apply(_status, axis=1, result_type="expand")
+    inj_note = (f"injury report wk {inj_week}" if inj_week is not None
+                else "no injury report available")
+    bye_note = ", ".join(sorted(byes)) if byes else "none"
+    note = (f"Form = last 4 games through week {last_done}; {inj_note}; "
+            f"week {this_week} byes: {bye_note}.")
+    return form, f"Week {this_week}", note
 
 
 if __name__ == "__main__":
@@ -205,6 +273,6 @@ if __name__ == "__main__":
     ps = player_seasons(weekly)
     print("player-seasons:", ps.shape)
     last = int(ps["season"].max())
-    print(ps[ps["season"] == last].nlargest(5, "fantasy_points_ppr")[
-        ["player_display_name", "position", "games", "fantasy_points_ppr", "ppg"]
+    print(ps[ps["season"] == last].nlargest(5, "fantasy_points")[
+        ["player_display_name", "position", "games", "fantasy_points", "ppg"]
     ].to_string(index=False))
